@@ -2,6 +2,7 @@ from __future__ import print_function, division
 from builtins import range
 from builtins import object
 import os
+from copy import deepcopy
 import pickle as pickle
 
 import numpy as np
@@ -152,8 +153,9 @@ class Solver(object):
         """
         # Set up some variables for book-keeping
         self.epoch = 0
-        self.best_val_acc = 0
+        self.best_val_acc = -np.inf
         self.best_params = {}
+        self.best_bn_params = None
         self.loss_history = []
         self.train_acc_history = []
         self.val_acc_history = []
@@ -299,6 +301,10 @@ class Solver(object):
                     self.best_params = {}
                     for k, v in self.model.params.items():
                         self.best_params[k] = v.copy()
+                    # Running statistics belong to the same epoch as the weights.
+                    self.best_bn_params = deepcopy(getattr(self.model, 'bn_params', None))
 
         # At the end of training swap the best params into the model
         self.model.params = self.best_params
+        if self.best_bn_params is not None:
+            self.model.bn_params = deepcopy(self.best_bn_params)

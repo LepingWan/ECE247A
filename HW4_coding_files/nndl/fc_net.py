@@ -125,8 +125,10 @@ class FullyConnectedNet:
     def __init__(self, hidden_dims, input_dim=3*32*32, num_classes=10,
                  dropout=1, use_batchnorm=False, reg=0.0,
                  weight_scale=1e-2, dtype=np.float32, seed=None):
-        if dropout < 1 or use_batchnorm:
-            raise NotImplementedError('Batch normalization and dropout are added in Problems 2 and 3.')
+        if not 0 < dropout <= 1:
+            raise ValueError('dropout is a keep probability in (0, 1].')
+        self.use_batchnorm = use_batchnorm
+        self.use_dropout = dropout < 1
         self.reg = reg
         self.dtype = dtype
         self.num_layers = len(hidden_dims) + 1
@@ -135,13 +137,38 @@ class FullyConnectedNet:
         for i in range(1, self.num_layers + 1):
             self.params['W%d' % i] = (weight_scale * np.random.randn(dims[i-1], dims[i])).astype(dtype)
             self.params['b%d' % i] = np.zeros(dims[i], dtype=dtype)
+            if use_batchnorm and i < self.num_layers:
+                self.params['gamma%d' % i] = np.ones(dims[i], dtype=dtype)
+                self.params['beta%d' % i] = np.zeros(dims[i], dtype=dtype)
+
+        self.bn_params = [{'mode': 'train'} for _ in hidden_dims] if use_batchnorm else []
+        self.dropout_param = {'mode': 'train', 'p': dropout}
+        if seed is not None:
+            self.dropout_param['seed'] = seed
 
     def loss(self, X, y=None):
+        mode = 'test' if y is None else 'train'
+        self.dropout_param['mode'] = mode
+        for bn_param in self.bn_params:
+            bn_param['mode'] = mode
+
         out = X.astype(self.dtype, copy=False)
         caches = {}
         for i in range(1, self.num_layers):
-            out, caches[i] = affine_relu_forward(out, self.params['W%d' % i],
-                                                 self.params['b%d' % i])
+            out, fc_cache = affine_forward(out, self.params['W%d' % i], self.params['b%d' % i])
+            bn_cache = None
+            if self.use_batchnorm:
+                out, bn_cache = batchnorm_forward(out, self.params['gamma%d' % i],
+                                                  self.params['beta%d' % i], self.bn_params[i-1])
+            out, relu_cache = relu_forward(out)
+            drop_cache = None
+            if self.use_dropout:
+                drop_param = self.dropout_param.copy()
+                if 'seed' in drop_param:
+                    drop_param['seed'] += i - 1
+                out, drop_cache = dropout_forward(out, drop_param)
+            caches[i] = (fc_cache, bn_cache, relu_cache, drop_cache)
+
         L = self.num_layers
         scores, caches[L] = affine_forward(out, self.params['W%d' % L], self.params['b%d' % L])
         if y is None:
@@ -155,7 +182,15 @@ class FullyConnectedNet:
             if i == L:
                 dout, dW, db = affine_backward(dout, caches[i])
             else:
-                dout, dW, db = affine_relu_backward(dout, caches[i])
+                fc_cache, bn_cache, relu_cache, drop_cache = caches[i]
+                if self.use_dropout:
+                    dout = dropout_backward(dout, drop_cache)
+                dout = relu_backward(dout, relu_cache)
+                if self.use_batchnorm:
+                    dout, dgamma, dbeta = batchnorm_backward(dout, bn_cache)
+                    grads['gamma%d' % i] = dgamma
+                    grads['beta%d' % i] = dbeta
+                dout, dW, db = affine_backward(dout, fc_cache)
             grads['W%d' % i] = dW + self.reg * W
             grads['b%d' % i] = db
         return loss, grads
